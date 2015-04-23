@@ -1,0 +1,437 @@
+---
+title: "US Officer Involved Shootings"
+subtitle: "March 17 - April 12, 2015"
+author: "Stephen D. Wells"
+date: "April 16, 2015"
+runtime: shiny
+output: html_document
+---
+
+```{r, echo=FALSE}
+library(BH)
+library(shiny)
+
+copShot = read.csv("copshot_complete.csv")
+copShot$date <- as.Date(copShot$date)
+```
+
+The title is a bit misleading as the actual dataset contains all incidents where
+both a firearm and an officer were present in a potential crime.  "Potential"
+because in the U.S. an individual is presumed innocent until proven otherwise.
+This does not necesarily mean that the firearm was even discharged.  We have
+tried to display incidents where the results ended in *death* or *injury* as
+separate displays where appropriate and keep our results as interactive as
+possible allowing the reader to explore the resulting dataset without bias from
+the author.
+
+#### Observations
+
+* `r 50 - sum(! duplicated(copShot[,"state"]))` States have no recorded incidents
+* Total number of recorded incidents were `r dim(copShot)[1]`
+* The largest number of people injured during a  single incident was 
+`r max(copShot$injured)`
+* The largest number of deaths were `r max(copShot$killed)`
+* `r sum(!copShot$injured & !copShot$killed)` incidents did not result in death or injury
+
+## <a name="contents"></a>Contents
+
+<img src="img/trigger.jpg" width=200 align=right style="padding-right: 25px">
+
+1. <a href="#datasource">Data Sources</a>
+2. <a href="#datatable">Final Data Table</a>
+3. <a href="#timeseries">Frequency Fluctuations Over Time</a>
+4. <a href="#d3graph">Daily Incident Locations Network</a>
+5. <a href="#leaflet">Incident Map</a>
+6. <a href="#author">Author and Contact Information</a>
+
+<a name="datasource"></a>
+
+### Data Sources
+
+The following dataset orginally came from the 
+<a href="http://www.gunviolencearchive.org/" target="_new">Gun Violence Archive</a>
+public report at <br>
+[ http://www.gunviolencearchive.org/officer-involved-shootings ]<br>
+on `r format(max(copShot$date), "%b %d, %Y")` and contains only the previous
+`r max(copShot$date) - min(copShot$date)` days of data as **I have been
+unable to get in contact with the GVA<sup>&#42;</sup>** to request a more complete
+dataset.
+
+&#42;(*If you can, I'd be in your debt - <a href="#author">contact me</a>*)
+
+#### Manipulations...
+
+The headers were cleaned up to contain only lower-cased single words, 
+dates were reformatted as yyyy-mm-dd so they could easily be read into R and
+then the following columns were added:
+
+* postalcode
+* display_address
+* latitude
+* longitude
+
+<img src="img/badge.jpg" align=right width=200>
+
+The data for these columns were pulled from Google's map API using the
+address, city and state values and if any data point was missing
+it returned the best approximation.
+
+<a name="datatable"></a>
+
+### Final Data Table
+
+Here's the final breakdown of the resulting dataset, such that you can
+search it and page through it at your leisure. The columns can be 
+manipulated individually so they fit on the screen, simply select
+the ones you wish to display and go back *Table Display* to review
+your changes.
+
+```{r, echo=FALSE, fig.height=25, out.height=25}
+shinyApp(
+  ui = navbarPage(
+    title="DataTable",
+    tabPanel('Table Display',
+             dataTableOutput('shootings')
+             ) ,
+    tabPanel('Columns',
+             checkboxGroupInput('disp_cols',
+                                'Select Columns',
+                                names(copShot),
+                                selected = names(copShot)[1:6])
+             )
+    
+  ),
+  server = function(input, output) {
+    output$shootings = renderDataTable(
+      copShot[, input$disp_cols, drop=FALSE],
+      options = list(
+        lengthMenu = list(c(5,10,25,50,100), c('minimal','little','bunch','lots','overload')),
+        pageLength = 5
+      )
+    )
+  },
+  options = list(height = 500)
+)
+```
+
+Data Tables are Awesome! http://rstudio.github.io/DT/
+
+<a name="timeseries"></a>
+
+### Frequency Fluctuations over Time
+
+<img src="img/bullet.jpg" align=right width=200>
+
+This is a breakdown of the shootings over time.  There's a checkbox for each incident so if
+for instance, you select **deaths** you will see a frequency count of the number of deaths
+for each day of the selected timeframe.  The other two will add to that chart.  If none of
+the entries are selected then you'll simply see the total of all incidents.
+
+Scrolling down in this window displays three linked graphs for each incident.  This means
+that if you select a range in any one graph, the same range is paired with the other two.
+
+```{r, echo=FALSE}
+library(dygraphs)
+suppressWarnings(library(xts, quietly=TRUE, warn.conflicts=FALSE))
+library(plyr)
+
+shinyApp(
+  ui = fluidPage(
+    titlePanel("Officer Involved Gun Incidents"),
+    sidebarLayout(
+      sidebarPanel(
+         checkboxGroupInput("incidentLevel", label = h3("Incident"), 
+                         choices = list("deaths" = 'deaths',
+                                        "injuries" = 'injuries',
+                                        "neither" = 'neither'),
+                         selected = 'neither')
+      ),
+      mainPanel(
+        dygraphOutput("incidents_graph"),
+        hr(),
+        dygraphOutput("incidents_deaths", height=200),
+        dygraphOutput("incidents_injuries", height=200),
+        dygraphOutput("incidents_neither", height=200)
+      )
+    )
+  ),
+  server = function(input, output) {
+    shots_freq <- plyr:::count(copShot, 'date')
+    deaths_freq <- plyr:::count(copShot[copShot$killed >= 1,], 'date')
+    injuries_freq <- plyr:::count(copShot[copShot$injured >= 1,], 'date')
+    neither_freq <- plyr:::count(copShot[copShot$injured == 0 & copShot$killed == 0,], 'date')
+      
+    deaths <- xts(deaths_freq$freq, deaths_freq$date)
+    injuries <- xts(injuries_freq$freq, injuries_freq$date)
+    neither <- xts(neither_freq$freq, neither_freq$date)
+    shots <- xts(shots_freq$freq, shots_freq$date)
+      
+    output$incidents_graph <- renderDygraph({
+      incidents <- NULL
+      if ("deaths" %in% input$incidentLevel) {
+         incidents <- cbind(incidents, "deaths" = deaths)
+      }
+      if ("injuries" %in% input$incidentLevel) {
+        incidents <- cbind(incidents, "injuries" = injuries)
+      }
+      if ("neither" %in% input$incidentLevel) {
+        incidents <- cbind(incidents, "neither" = neither)
+      }
+      
+      if (length(incidents) == 0) {
+        incidents <- shots
+      }
+
+      m <- dygraph(incidents, main = "Officer Involved Shootings") %>% 
+        dyRangeSelector(dateWindow = c("2015-03-17", "2015-04-12")) %>%
+        dyHighlight(
+          highlightSeriesOpts = list(strokeWidth = 3),
+          highlightCircleSize = 5,
+          highlightSeriesBackgroundAlpha = 0.2,
+          hideOnMouseOut = FALSE) %>%
+        dyAxis("y", label="Incidents")
+
+      return(m)
+    })
+    
+    output$incidents_deaths <- renderDygraph({
+        return(dygraph(deaths, main="Deaths", group="OIS"))
+    })
+    
+    output$incidents_injuries <- renderDygraph({
+        return(dygraph(injuries, main="Injuries", group="OIS"))
+    })
+    
+    output$incidents_neither <- renderDygraph({
+        return(dygraph(neither, main="Neither", group="OIS"))
+    })
+    
+      }, # server function
+  options = list(height = 1100)
+) # shiny app
+```
+
+For more on Time Series Graphs: http://rstudio.github.io/dygraphs
+
+<a name="d3graph"></a>
+
+### Daily Incident Locations Network
+
+Here we get a feel for the location of incidents over a given day.
+The center of the web displays the date while the branches are made
+up of the *State*, *City* and *Address* within that city.
+
+```{r, echo=FALSE}
+library(shiny)
+library(networkD3)
+
+shinyApp(
+  ui = fluidPage(
+       # Application title
+       titlePanel("D3 Network Graph Example"),
+
+       # Show a D3 Network of the date
+       fluidRow(
+         column(2, #fluidRow(
+           dateInput(
+             "gunDate",
+             "Date",
+             value="2015-04-10",
+             format="yyyy-mm-dd",
+             min=min(copShot$date),
+             max=max(copShot$date)
+           )
+         ), # Column
+         column(10,treeNetworkOutput("tree", height="500px", width="100%"))
+       )
+  ),
+
+  server = function(input, output) {
+    output$tree <- renderTreeNetwork({
+      day <- input$gunDate
+      
+      # setup a dataframe (df) for just this day
+      df <- copShot[copShot$date %in% as.Date(day),c("state","city","address")]
+      rownames(df) <- NULL
+      # probably no reason to order it but when I was developing this I tried
+      #  a couple different functions and sorting helped me organize what was
+      #  happening better in my muggle brain
+      df <- df[order(df$state,df$city,df$address),]
+      df[] <- lapply(df, as.character) # Hadley hack for removing factors
+      
+      d3_list <- list(
+        name=format(day, "%b %d, %Y"),             # day
+        children = lapply(
+          unique(df$state),
+          function(mystate) {
+            list(name=mystate,
+                 children=lapply(
+                   unique(df[df$state %in% mystate,"city"]),
+                   function(mycity) {
+                     list(name=mycity,
+                          children=lapply(
+                            unique(df[df$city %in% mycity,"address"]),
+                            function(myaddr) {
+                              list(name=myaddr)
+                            } # address function
+                          ) # address list
+                     ) # city list
+                   } # city function
+                 ) # state children
+            ) # state list
+          } # state function
+      ) # main children 
+    ) # main list
+    
+    m <- treeNetwork(
+      List=d3_list, 
+      fontSize=10, 
+      opacity = 0.9,
+      margin=0,
+      linkColour="#050D0E",
+      nodeColour="#0096AB",
+      nodeStroke="#006573",
+      textColour="#00010"
+    )
+    
+    return(m)
+      })
+  }, # server function
+  options = list(height = 575)
+) # shiny app
+```
+
+To make your own networked graphs: http://christophergandrud.github.io/networkD3/
+
+<a name="leaflet"></a>
+
+### Incident Map
+
+Here's a map of the US with the incidents plotted.  You can change the
+date ranges to see how things change over time and select different 
+incidents for review.  Each incident contains a link to the original 
+data source and those source pages contain a link to the story that 
+provides details about the event.
+
+```{r, echo=FALSE}
+library(shiny)
+#library(dplyr)
+library(leaflet)
+library(maps)
+
+#copShot = read.csv("copshot_complete.csv")
+#copShot$date <- as.Date(copShot$date)
+
+shinyApp(
+  ui = fluidPage(
+       # Application title
+       titlePanel("Officer Involved Gun Incidents around the US"),
+  
+       # Sidebar with a slider input for the number of bins
+       sidebarLayout(
+         sidebarPanel(
+           dateRangeInput("dates",
+                          label = h3("Date range"),
+                          start = copShot[end(copShot$date)[1],]$date,
+                          end = copShot[1,]$date),
+           checkboxGroupInput("incidentLevel", label = h3("Incident"), 
+                         choices = list("Killed (red)" = 'killed',
+                                        "Injured (blue)" = 'injured',
+                                        "Neither (green)" = 'missed'),
+                         selected = 'missed')
+         ),
+    
+         # Show a plot of the generated distribution
+         mainPanel(
+           leafletOutput("distPlot")
+         )
+      )
+  ),
+  
+  server = function(input, output) {
+    mapStates = map("state", fill=TRUE, plot=FALSE)
+  
+  
+  
+    output$distPlot <- renderLeaflet({
+      killed = copShot[copShot$killed >= 1 &
+                       copShot$date >= as.Date(input$dates[1]) &
+                       copShot$date <= as.Date(input$dates[2]),]
+
+      injured = copShot[copShot$injured >= 1 &
+                        copShot$date >= as.Date(input$dates[1]) &
+                        copShot$date <= as.Date(input$dates[2]),]
+    
+      missed = copShot[copShot$killed == 0 & copShot$injured == 0 &
+                       copShot$date >= as.Date(input$dates[1]) &
+                       copShot$date <= as.Date(input$dates[2]),]
+    
+      m = leaflet(data = mapStates) %>%
+        addTiles() %>%
+        addPolygons(fillColor = topo.colors(10, alpha = NULL), stroke = FALSE)
+    
+      if (is.null(input$incidentLevel)) return(m)
+    
+      if ("killed" %in% input$incidentLevel) {
+         m = m %>% addCircles(
+           killed$longitude,
+           killed$latitude,
+           color="red",
+           popup=paste("<b>",killed$date,"</b> - ",
+                       killed$incident,
+                       "<br><a href='", killed$url, "' target='_new'>",
+                       killed$url, "</a>", sep="")
+         )
+      }
+    
+      if ("injured" %in% input$incidentLevel) {
+         m = m %>% addCircles(
+           injured$longitude,
+           injured$latitude,
+           color="blue",
+           popup=paste("<b>",injured$date,"</b> - ",
+                       injured$incident,
+                       "<br><a href='", injured$url, "' target='_new'>",
+                       injured$url, "</a>", sep=""))
+      }
+    
+      if ("missed" %in% input$incidentLevel) {
+         m = m %>% addCircles(
+           missed$longitude,
+           missed$latitude,
+           color="green",
+           popup=paste("<b>",missed$date,"</b> - ",
+                       missed$incident,
+                       "<br><a href='", missed$url, "' target='_new'>",
+                       missed$url, "</a>", sep=""))
+      }
+    
+      return(m)
+    })
+  },
+  options = list(height = 525)
+)
+```
+
+To make your own map, check out: http://rstudio.github.io/leaflet/
+
+<a name="author"></a>
+
+### Author and Contact Information
+
+<img src="img/bullet_hole.jpg" width=200 align=left style="padding-right: 25px">
+
+Though constantly being stalked by his shadow, your most humble
+author, Mister Stephen D. Wells (*the first*) has, with his nearly
+limitless ability to express humility, delivered this piece to you
+for your interpretation. Compliments and praise should be dispensed
+sparing no expense.
+
+Though the subject matter may be very controversial, let us remember
+that data alone are not. Only through our very human interactions with
+data, can we reveal it's secrets.  If you found something of interest in this
+piece (*yes, even if it's a mistake on my part*) don't hesitate to contact
+me:
+
+* *LinkedIn:* <a href="https://www.linkedin.com/in/sdwells">https://www.linkedin.com/in/sdwells</a><br>
+* *Mail:* yxes&#64;NOSPAMcpan.org (remove the *NOSPAM* of course)
